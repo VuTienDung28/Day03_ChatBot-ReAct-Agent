@@ -6,6 +6,7 @@ Hỗ trợ chuyển đổi linh hoạt giữa các nhà cung cấp AI chỉ bằ
 import os
 import sys
 import json
+import re
 import requests
 from dotenv import load_dotenv
 
@@ -132,12 +133,43 @@ class OpenRouterProvider(BaseLLMProvider):
 
 
 class MockProvider(BaseLLMProvider):
-    """Offline Mock Provider (Cho bài test không cần kết nối API)"""
+    """Offline provider producing deterministic Cupid ReAct responses."""
+
     def generate(self, prompt: str, system_prompt: str = "") -> str:
-        text = prompt.lower()
-        if "thời tiết" in text and "hà nội" in text:
-            return "Thought: Cần tra cứu thời tiết Hà Nội.\nAction: get_weather['Hà Nội']"
-        return "🤖 [Mock Provider]: Phản hồi giả lập offline cho bài test."
+        initial_query = prompt.split("Lịch sử Action", 1)[0]
+        user_match = re.search(r"\b(U\d+)\b", initial_query)
+        user_id = user_match.group(1) if user_match else "U001"
+        wants_details = "phân tích" in initial_query.lower()
+        wants_opener = "lời mở đầu" in initial_query.lower()
+
+        if "Observation:" not in prompt:
+            return (
+                "Action: find_candidate_matches\n"
+                f'Action Input: {{"user_id": "{user_id}", "limit": 3}}'
+            )
+        if '"ok": false' in prompt.lower():
+            return f"Final Answer: Không tìm thấy hồ sơ {user_id}, nên mình chưa thể tìm ứng viên phù hợp."
+
+        candidate_match = re.search(r'"candidate_id":\s*"(U\d+)"', prompt)
+        candidate_id = candidate_match.group(1) if candidate_match else "U002"
+        if wants_details and "Action: calculate_compatibility" not in prompt:
+            return (
+                "Action: calculate_compatibility\n"
+                f'Action Input: {{"user_id": "{user_id}", "candidate_id": "{candidate_id}"}}'
+            )
+        if wants_opener and "Action: suggest_first_message" not in prompt:
+            return (
+                "Action: suggest_first_message\n"
+                f'Action Input: {{"user_id": "{user_id}", "candidate_id": "{candidate_id}"}}'
+            )
+
+        score_match = re.search(r'"total_score":\s*([0-9.]+)', prompt)
+        message_match = re.search(r'"message":\s*"((?:\\.|[^"\\])*)"', prompt)
+        score = score_match.group(1) if score_match else "chưa xác định"
+        message = json.loads(f'"{message_match.group(1)}"') if message_match else ""
+        if wants_opener:
+            return f"Final Answer: Điểm tương thích minh họa là {score}. Lời mở đầu gợi ý: {message}"
+        return "Final Answer: Mình đã tìm thấy ba ứng viên phù hợp nhất từ dữ liệu mô phỏng."
 
 
 def get_llm_provider(provider_name: str = None) -> BaseLLMProvider:

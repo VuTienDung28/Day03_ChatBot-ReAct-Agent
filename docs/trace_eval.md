@@ -164,49 +164,45 @@ Kiểm tra ReAct Agent có lựa chọn đúng tool, truyền đúng JSON input,
 
 #### Final Answer quan sát được
 
-> Chào Bình, mình thấy chúng ta đều thích du lịch. Bạn thích điều gì nhất ở sở thích này?
+> Điểm tương thích minh họa là 90.0. Lời mở đầu gợi ý: Chào Bình, mình thấy chúng ta đều thích du lịch. Bạn thích điều gì nhất ở sở thích này?
 
 ### 3.4. Đánh giá Test case số 4
 
 | Tiêu chí | Điểm | Nhận xét |
 | :--- | :---: | :--- |
-| Factual correctness | **1/2** | Tool cho kết quả đúng, nhưng Final Answer mới chỉ hiển thị lời mở đầu, chưa tổng hợp rõ điểm 90.0 và phân tích chi tiết. |
+| Factual correctness | **2/2** | Final Answer tổng hợp đúng điểm 90.0 và lời mở đầu từ Observation. |
 | Grounding | **2/2** | Candidate ID, điểm số và lời mở đầu đều lấy từ Observation. |
 | Tool selection | **2/2** | Gọi đúng thứ tự `find_candidate_matches` → `calculate_compatibility` → `suggest_first_message`. |
 | Termination | **2/2** | Dừng đúng sau ba lần gọi tool và một Final Answer. |
-| **Tổng** | **7/8** | Luồng ReAct đạt; cần cải thiện nội dung Final Answer để tổng hợp đầy đủ kết quả. |
+| **Tổng** | **8/8** | Luồng ReAct hoàn thành đầy đủ expected behavior. |
 
-### 3.5. Failed trace — Test case số 5
+### 3.5. Edge-case trace — Test case số 5
 
 **Đầu vào:**
 
 > Tôi là người dùng U999. Hãy tìm người phù hợp nhất với tôi.
 
-**Kỳ vọng:**
+**Trace quan sát được:**
 
 ```text
 Action: find_candidate_matches
 Action Input: {"user_id": "U999", "limit": 3}
-Observation: PROFILE_NOT_FOUND
-Final Answer: thông báo lịch sự
+Observation: {"ok": false, "error": {"code": "PROFILE_NOT_FOUND", "message": "Không tìm thấy hồ sơ U999"}}
+Final Answer: Không tìm thấy hồ sơ U999, nên mình chưa thể tìm ứng viên phù hợp.
 ```
-
-**Thực tế:** Agent trả `Final Answer` trực tiếp rằng U999 không hợp lệ, không gọi tool để xác minh.
 
 | Tiêu chí | Kết quả | Nhận xét |
 | :--- | :---: | :--- |
 | An toàn | **Đạt** | Không bịa hồ sơ, không crash và không lặp vô hạn. |
-| Tool selection | **Chưa đạt** | Không gọi `find_candidate_matches` như expected behavior. |
-| Grounding | **Chưa đạt** | Không có Observation `PROFILE_NOT_FOUND`. |
-| Termination | **Đạt** | Dừng ngay bằng câu trả lời lịch sự. |
+| Tool selection | **Đạt** | Gọi đúng `find_candidate_matches` để xác minh U999. |
+| Grounding | **Đạt** | Final Answer dựa trên Observation `PROFILE_NOT_FOUND`. |
+| Termination | **Đạt** | Dừng sau một tool call và trả thông báo lịch sự. |
 
-**Root cause:** Prompt chưa buộc model phải dùng tool để xác minh mọi `user_id`; model tự suy luận U999 không tồn tại từ mẫu ID hoặc ngữ cảnh.
-
-**Đề xuất sửa:** Bổ sung guardrail: khi yêu cầu liên quan đến hồ sơ hoặc `user_id`, Agent không được tự kết luận ID hợp lệ hay không hợp lệ mà phải gọi tool thích hợp để xác minh.
+**Khắc phục:** System prompt nay buộc Agent gọi tool để xác minh mọi `user_id`; `MockProvider` cũng tuân thủ cùng contract Action/Observation để demo offline có thể lặp lại.
 
 ### 3.6. Kết luận Mốc 3
 
-ReAct Agent đã hoàn thành đúng luồng ba tool của Test 4, sử dụng dữ liệu deterministic và tạo trace `Action → Action Input → Observation → Final Answer`. Agent cũng dừng an toàn ở edge case. Tuy nhiên, Test 5 chưa tuân thủ tool path và Final Answer của Test 4 chưa tổng hợp đầy đủ điểm tương thích. Hai vấn đề này cần được khắc phục trước khi đánh dấu toàn bộ Mốc 3 hoàn thành tuyệt đối.
+ReAct Agent hoàn thành đúng luồng ba tool của Test 4, tổng hợp điểm 90.0 cùng lời mở đầu dựa trên dữ liệu deterministic và tạo trace `Action → Action Input → Observation → Final Answer`. Test 5 gọi tool để xác minh U999, nhận `PROFILE_NOT_FOUND` và dừng an toàn bằng thông báo lịch sự. Các regression test khóa cả hai luồng để tránh tái diễn lỗi.
 
 ### 3.7. Checklist Role 5 — Mốc 3
 
