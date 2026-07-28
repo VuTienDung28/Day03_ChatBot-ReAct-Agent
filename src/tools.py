@@ -63,7 +63,7 @@ def _eligibility_reason(first: dict, second: dict) -> str | None:
 
 def _jaccard(left: list[str], right: list[str]) -> float:
     union = set(left) | set(right)
-    return 100.0 if not union else len(set(left) & set(right)) / len(union) * 100
+    return 0.0 if not union else len(set(left) & set(right)) / len(union) * 100
 
 
 def _compatibility(first: dict, second: dict) -> dict:

@@ -133,43 +133,140 @@ class OpenRouterProvider(BaseLLMProvider):
 
 
 class MockProvider(BaseLLMProvider):
-    """Offline provider producing deterministic Cupid ReAct responses."""
+    """Offline provider deterministic cho các luồng demo Cupid."""
 
     def generate(self, prompt: str, system_prompt: str = "") -> str:
-        initial_query = prompt.split("Lịch sử Action", 1)[0]
-        user_match = re.search(r"\b(U\d+)\b", initial_query)
-        user_id = user_match.group(1) if user_match else "U001"
-        wants_details = "phân tích" in initial_query.lower()
-        wants_opener = "lời mở đầu" in initial_query.lower()
+        text = prompt.lower()
+        system_text = system_prompt.lower()
 
-        if "Observation:" not in prompt:
+        if "react agent" not in system_text:
+            if "3 yếu tố quan trọng" in text:
+                return (
+                    "Ba yếu tố quan trọng gồm mục tiêu mối quan hệ, giá trị "
+                    "sống và sở thích chung. Kết quả chỉ mang tính tham khảo."
+                )
+            if "địa chỉ nhà" in text or "tọa độ chính xác" in text:
+                return (
+                    "Không nên chia sẻ vị trí chính xác với người lạ vì điều "
+                    "đó có thể ảnh hưởng đến quyền riêng tư và an toàn cá nhân."
+                )
+            if "u999" in text:
+                return (
+                    "Không tìm thấy hồ sơ U999 trong dữ liệu mô phỏng được "
+                    "cung cấp. Bạn vui lòng kiểm tra lại mã hồ sơ."
+                )
+            if "gợi ý lời mở đầu" in text:
+                return (
+                    "Theo dữ liệu mô phỏng, U002 là ứng viên nổi bật cho U001. "
+                    "Lời mở đầu gợi ý: Chào Bình, mình thấy chúng ta đều thích "
+                    "du lịch. Bạn thích điều gì nhất ở sở thích này?"
+                )
+            if "tìm 3 hồ sơ" in text or "tìm người phù hợp" in text:
+                return (
+                    "Theo dữ liệu mô phỏng, ba hồ sơ nổi bật là U002, U003 và "
+                    "U004. Baseline không dùng tool nên kết quả này không được "
+                    "bảo đảm deterministic."
+                )
+            return "Đây là phản hồi baseline minh họa, không sử dụng tool."
+
+        selected_match = re.search(
+            r"hồ sơ người dùng đã chọn:\s*(u\d+)",
+            text,
+            re.I,
+        )
+        query_ids = re.findall(r"\bu\d{3,}\b", text, re.I)
+        user_id = (
+            selected_match.group(1).upper()
+            if selected_match
+            else (query_ids[0].upper() if query_ids else None)
+        )
+        candidate_match = re.search(
+            r'"candidate_id"\s*:\s*"(u\d+)"',
+            text,
+            re.I,
+        )
+        candidate_id = (
+            candidate_match.group(1).upper()
+            if candidate_match
+            else None
+        )
+
+        if "profile_not_found" in text:
+            return (
+                f"Final Answer: Không tìm thấy hồ sơ {user_id or 'đã chọn'} "
+                "trong dữ liệu mô phỏng. Bạn vui lòng kiểm tra lại mã hồ sơ."
+            )
+
+        wants_analysis = (
+            "phân tích độ tương thích" in text or "phân tích tương thích" in text
+        )
+        wants_opener = "lời mở đầu" in text
+        has_matches = '"matches"' in text and '"candidate_id"' in text
+        has_compatibility = '"total_score"' in text and '"breakdown"' in text
+        has_opener = '"message"' in text and '"based_on"' in text
+
+        if has_opener:
+            return (
+                "Final Answer: Đã tạo lời mở đầu từ Observation đã được xác "
+                "minh."
+            )
+
+        if has_compatibility and wants_opener:
+            return (
+                "Action: suggest_first_message\n"
+                f'Action Input: {{"user_id": "{user_id}", '
+                f'"candidate_id": "{candidate_id}"}}'
+            )
+
+        if has_compatibility:
+            return (
+                "Final Answer: Đã phân tích độ tương thích bằng dữ liệu tool."
+            )
+
+        if has_matches and wants_analysis:
+            return (
+                "Action: calculate_compatibility\n"
+                f'Action Input: {{"user_id": "{user_id}", '
+                f'"candidate_id": "{candidate_id}"}}'
+            )
+
+        if has_matches:
+            return (
+                "Final Answer: Đã tìm thấy các ứng viên phù hợp từ dữ liệu "
+                "tool."
+            )
+
+        wants_matches = (
+            re.search(
+                r"\b(tìm|đề xuất|gợi ý)\b.*\b(người|ứng viên|hồ sơ)\b",
+                text,
+                re.I,
+            )
+            or "ghép đôi" in text
+            or "phù hợp nhất" in text
+        )
+        if user_id and wants_matches:
             return (
                 "Action: find_candidate_matches\n"
                 f'Action Input: {{"user_id": "{user_id}", "limit": 3}}'
             )
-        if '"ok": false' in prompt.lower():
-            return f"Final Answer: Không tìm thấy hồ sơ {user_id}, nên mình chưa thể tìm ứng viên phù hợp."
 
-        candidate_match = re.search(r'"candidate_id":\s*"(U\d+)"', prompt)
-        candidate_id = candidate_match.group(1) if candidate_match else "U002"
-        if wants_details and "Action: calculate_compatibility" not in prompt:
+        if "3 yếu tố quan trọng" in text:
             return (
-                "Action: calculate_compatibility\n"
-                f'Action Input: {{"user_id": "{user_id}", "candidate_id": "{candidate_id}"}}'
-            )
-        if wants_opener and "Action: suggest_first_message" not in prompt:
-            return (
-                "Action: suggest_first_message\n"
-                f'Action Input: {{"user_id": "{user_id}", "candidate_id": "{candidate_id}"}}'
+                "Final Answer: Ba yếu tố quan trọng gồm mục tiêu mối quan hệ, "
+                "giá trị sống và sở thích chung."
             )
 
-        score_match = re.search(r'"total_score":\s*([0-9.]+)', prompt)
-        message_match = re.search(r'"message":\s*"((?:\\.|[^"\\])*)"', prompt)
-        score = score_match.group(1) if score_match else "chưa xác định"
-        message = json.loads(f'"{message_match.group(1)}"') if message_match else ""
-        if wants_opener:
-            return f"Final Answer: Điểm tương thích minh họa là {score}. Lời mở đầu gợi ý: {message}"
-        return "Final Answer: Mình đã tìm thấy ba ứng viên phù hợp nhất từ dữ liệu mô phỏng."
+        if "địa chỉ nhà" in text or "tọa độ chính xác" in text:
+            return (
+                "Final Answer: Không nên chia sẻ vị trí chính xác với người lạ "
+                "vì có thể ảnh hưởng đến quyền riêng tư và an toàn cá nhân."
+            )
+
+        return (
+            "Final Answer: Yêu cầu nằm ngoài các luồng Cupid demo hiện được "
+            "hỗ trợ."
+        )
 
 
 def get_llm_provider(provider_name: str = None) -> BaseLLMProvider:
