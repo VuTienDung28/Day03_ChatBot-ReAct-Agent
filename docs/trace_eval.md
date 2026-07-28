@@ -89,7 +89,7 @@ Kiểm tra ReAct Agent có lựa chọn đúng tool, truyền đúng JSON input,
 | Model | `gpt-4o-mini` |
 | System prompt | `REACT_SYSTEM_PROMPT` |
 | Tool registry | `AVAILABLE_TOOLS` |
-| Giới hạn vòng lặp | `MAX_ITERATIONS = 8` |
+| Giới hạn vòng lặp | `MAX_ITERATIONS = 5` |
 | Dữ liệu | `cupid_data/cupid_profiles.json` |
 
 ### 3.3. Happy trace — Test case số 4
@@ -164,19 +164,22 @@ Kiểm tra ReAct Agent có lựa chọn đúng tool, truyền đúng JSON input,
 
 #### Final Answer quan sát được
 
-> Chào Bình, mình thấy chúng ta đều thích du lịch. Bạn thích điều gì nhất ở sở thích này?
+> U002 (Bình) là ứng viên được phân tích từ dữ liệu tool. Điểm tương thích minh
+> họa: 90.0. Sở thích chung: du lịch, nhiếp ảnh. Giá trị chung: gia đình, phát
+> triển bản thân, trung thực. Lời mở đầu gợi ý: Chào Bình, mình thấy chúng ta
+> đều thích du lịch. Bạn thích điều gì nhất ở sở thích này?
 
 ### 3.4. Đánh giá Test case số 4
 
 | Tiêu chí | Điểm | Nhận xét |
 | :--- | :---: | :--- |
-| Factual correctness | **1/2** | Tool cho kết quả đúng, nhưng Final Answer mới chỉ hiển thị lời mở đầu, chưa tổng hợp rõ điểm 90.0 và phân tích chi tiết. |
+| Factual correctness | **2/2** | Final Answer được dựng từ Observation và tổng hợp đúng ứng viên U002, điểm 90.0, điểm chung cùng lời mở đầu. |
 | Grounding | **2/2** | Candidate ID, điểm số và lời mở đầu đều lấy từ Observation. |
 | Tool selection | **2/2** | Gọi đúng thứ tự `find_candidate_matches` → `calculate_compatibility` → `suggest_first_message`. |
 | Termination | **2/2** | Dừng đúng sau ba lần gọi tool và một Final Answer. |
-| **Tổng** | **7/8** | Luồng ReAct đạt; cần cải thiện nội dung Final Answer để tổng hợp đầy đủ kết quả. |
+| **Tổng** | **8/8** | Luồng ReAct và câu trả lời grounded đều đạt yêu cầu. |
 
-### 3.5. Failed trace — Test case số 5
+### 3.5. Edge trace sau khắc phục — Test case số 5
 
 **Đầu vào:**
 
@@ -191,22 +194,28 @@ Observation: PROFILE_NOT_FOUND
 Final Answer: thông báo lịch sự
 ```
 
-**Thực tế:** Agent trả `Final Answer` trực tiếp rằng U999 không hợp lệ, không gọi tool để xác minh.
+**Kiểm thử hồi quy hiện tại:** Agent gọi `find_candidate_matches` với U999, nhận
+Observation có mã lỗi `PROFILE_NOT_FOUND`, sau đó trả thông báo “Không tìm thấy
+hồ sơ U999”. Không tạo hồ sơ, không gọi lặp và không dùng dữ liệu chưa xác minh.
 
 | Tiêu chí | Kết quả | Nhận xét |
 | :--- | :---: | :--- |
 | An toàn | **Đạt** | Không bịa hồ sơ, không crash và không lặp vô hạn. |
-| Tool selection | **Chưa đạt** | Không gọi `find_candidate_matches` như expected behavior. |
-| Grounding | **Chưa đạt** | Không có Observation `PROFILE_NOT_FOUND`. |
-| Termination | **Đạt** | Dừng ngay bằng câu trả lời lịch sự. |
+| Tool selection | **Đạt** | Gọi đúng `find_candidate_matches` với U999 trước khi kết luận. |
+| Grounding | **Đạt** | Final Answer dựa trên Observation `PROFILE_NOT_FOUND`. |
+| Termination | **Đạt** | Dừng sau một lần gọi tool và trả lời lịch sự. |
 
-**Root cause:** Prompt chưa buộc model phải dùng tool để xác minh mọi `user_id`; model tự suy luận U999 không tồn tại từ mẫu ID hoặc ngữ cảnh.
-
-**Đề xuất sửa:** Bổ sung guardrail: khi yêu cầu liên quan đến hồ sơ hoặc `user_id`, Agent không được tự kết luận ID hợp lệ hay không hợp lệ mà phải gọi tool thích hợp để xác minh.
+**Khắc phục đã áp dụng:** Executor xác định tool bắt buộc cho yêu cầu dữ liệu và
+không chấp nhận `Final Answer` nếu model chưa gọi tool cần thiết. `user_id` được
+khóa theo hồ sơ đã chọn; câu trả lời cuối được dựng từ Observation có cấu trúc.
 
 ### 3.6. Kết luận Mốc 3
 
-ReAct Agent đã hoàn thành đúng luồng ba tool của Test 4, sử dụng dữ liệu deterministic và tạo trace `Action → Action Input → Observation → Final Answer`. Agent cũng dừng an toàn ở edge case. Tuy nhiên, Test 5 chưa tuân thủ tool path và Final Answer của Test 4 chưa tổng hợp đầy đủ điểm tương thích. Hai vấn đề này cần được khắc phục trước khi đánh dấu toàn bộ Mốc 3 hoàn thành tuyệt đối.
+ReAct Agent đã hoàn thành đúng luồng ba tool của Test 4, sử dụng dữ liệu
+deterministic và tạo trace `Action → Action Input → Observation → Final Answer`.
+Test 5 cũng tuân thủ tool path, nhận đúng `PROFILE_NOT_FOUND` và dừng an toàn.
+Các kiểm thử hồi quy xác nhận guardrail tool bắt buộc, khóa `user_id`, grounding
+Final Answer và giới hạn năm vòng đều hoạt động đúng.
 
 ### 3.7. Checklist Role 5 — Mốc 3
 
@@ -214,6 +223,6 @@ ReAct Agent đã hoàn thành đúng luồng ba tool của Test 4, sử dụng d
 - [x] Ghi lại Action, JSON Action Input và Observation thật.
 - [x] Đối chiếu thứ tự tool với expected behavior.
 - [x] Chấm điểm theo rubric correctness, grounding, tool selection và termination.
-- [x] Ghi failed trace của Test 5 và phân tích root cause.
-- [x] Đề xuất biện pháp cải thiện guardrail.
+- [x] Ghi edge trace của Test 5 và xác nhận `PROFILE_NOT_FOUND`.
+- [x] Kiểm thử hồi quy guardrail sau khi khắc phục.
 

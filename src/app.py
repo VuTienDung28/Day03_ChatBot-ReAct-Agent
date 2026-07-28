@@ -7,6 +7,8 @@ import json
 import os
 import re
 import sys
+from queue import Empty, Queue
+from threading import Thread
 from typing import Any
 
 from dotenv import load_dotenv
@@ -19,7 +21,12 @@ if sys.stdout.encoding != 'utf-8':
     except Exception:
         pass
 
-from prompts import CHATBOT_BASELINE_PROMPT, MAX_ITERATIONS, REACT_SYSTEM_PROMPT
+from prompts import (
+    CHATBOT_BASELINE_PROMPT,
+    MAX_ITERATIONS,
+    REACT_SYSTEM_PROMPT,
+    TIMEOUT_SECONDS,
+)
 from providers import get_llm_provider
 from tools import AVAILABLE_TOOLS
 
@@ -28,12 +35,6 @@ load_dotenv()
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_CASES_PATH = os.path.join(PROJECT_ROOT, 'config', 'test_cases.json')
 PROFILES_PATH = os.path.join(PROJECT_ROOT, 'cupid_data', 'cupid_profiles.json')
-
-MOCK_DATA_RULES = '''Bạn là Cupid Chatbot Baseline.
-Dữ liệu MOCK_PROFILES trong yêu cầu là dữ liệu mô phỏng được phép sử dụng.
-Chỉ dùng dữ liệu được cung cấp; không gọi tool, không bịa hồ sơ hoặc thuộc tính.
-Nêu rõ kết quả chỉ mang tính minh họa, không phải kết luận khoa học.
-Trả lời bằng tiếng Việt, ngắn gọn và lịch sự.'''
 
 
 def _load_json(path: str) -> Any:
@@ -56,11 +57,14 @@ def load_mock_profiles() -> list[dict[str, Any]]:
 
 
 def run_baseline_chatbot(user_query: str, provider) -> str:
-    '''Chạy baseline có mock data trong context nhưng không gọi tool.'''
+    '''Chạy một LLM call với mock data trong context và không gọi tool.'''
     grounded_query = user_query + '\n\nMOCK_PROFILES:\n' + json.dumps(
         load_mock_profiles(), ensure_ascii=False
     )
-    return provider.generate(grounded_query, system_prompt=MOCK_DATA_RULES)
+    return provider.generate(
+        grounded_query,
+        system_prompt=CHATBOT_BASELINE_PROMPT,
+    )
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
@@ -74,7 +78,13 @@ def parse_react_response(response: str) -> dict[str, Any]:
 
     text = response.strip()
     if text.startswith('```') and text.endswith('```'):
-        text = re.sub(r'^```(?:text)?\s*|\s*```$', '', text, flags=re.I)
+        fenced = re.fullmatch(
+            r'```(?:text|json|markdown)?\s*(.*?)\s*```',
+            text,
+            re.I | re.S,
+        )
+        if fenced:
+            text = fenced.group(1).strip()
 
     final_match = re.fullmatch(r'Final Answer\s*:\s*(.+)', text, re.I | re.S)
     if final_match:
@@ -116,31 +126,65 @@ def execute_tool(action: str, action_input: dict[str, Any]) -> dict[str, Any]:
     tool = AVAILABLE_TOOLS.get(action)
     if tool is None:
         return _error('UNKNOWN_TOOL', f'Tool không tồn tại: {action}')
+
+    outcome: Queue[tuple[str, Any]] = Queue(maxsize=1)
+
+    def invoke() -> None:
+        try:
+            outcome.put(('result', tool(**action_input)))
+        except TypeError:
+            outcome.put(('invalid_arguments', None))
+        except Exception:
+            outcome.put(('execution_error', None))
+
+    worker = Thread(target=invoke, daemon=True)
+    worker.start()
+    worker.join(TIMEOUT_SECONDS)
+    if worker.is_alive():
+        return _error(
+            'TOOL_TIMEOUT',
+            f'Tool vượt quá thời gian chờ {TIMEOUT_SECONDS} giây',
+        )
+
     try:
-        observation = tool(**action_input)
-        if not isinstance(observation, dict) or 'ok' not in observation:
-            return _error('TOOL_EXECUTION_ERROR', 'Tool trả về sai contract')
-        return observation
-    except TypeError:
-        return _error('INVALID_TOOL_ARGUMENTS', 'Tham số gọi tool không hợp lệ')
-    except Exception:
+        outcome_type, payload = outcome.get_nowait()
+    except Empty:
         return _error('TOOL_EXECUTION_ERROR', 'Không thể thực thi tool')
+    if outcome_type == 'invalid_arguments':
+        return _error('INVALID_TOOL_ARGUMENTS', 'Tham số gọi tool không hợp lệ')
+    if outcome_type == 'execution_error':
+        return _error('TOOL_EXECUTION_ERROR', 'Không thể thực thi tool')
+    if not isinstance(payload, dict) or 'ok' not in payload:
+        return _error('TOOL_EXECUTION_ERROR', 'Tool trả về sai contract')
+    return payload
 
 
 def _provider_error(response: str) -> bool:
     if not isinstance(response, str):
         return True
-    prefix = response.lstrip().lower()
-    return prefix.startswith('[') and (
-        ' error]' in prefix or ' exception]' in prefix
+
+    prefix = response.lstrip()
+    header = re.match(r'^\[([^\]]+)\]', prefix)
+    if not header:
+        return False
+
+    return bool(
+        re.search(
+            r'\b(error|exception)\b',
+            header.group(1),
+            re.I,
+        )
     )
 
 
 def _build_react_prompt(
     user_query: str,
     trace: list[dict[str, Any]],
+    user_id: str | None = None,
 ) -> str:
     parts = [f'Yêu cầu ban đầu:\n{user_query}']
+    if user_id:
+        parts.append(f'Hồ sơ người dùng đã chọn: {user_id}')
     if trace:
         parts.append('Lịch sử Action và Observation đã được hệ thống xác minh:')
         for item in trace:
@@ -175,6 +219,155 @@ def _collect_structured_output(
         result['profile'] = data
 
 
+def _required_actions(
+    user_query: str,
+    user_id: str | None = None,
+) -> list[str]:
+    '''Xác định các tool tối thiểu cho yêu cầu thao tác trên hồ sơ cụ thể.'''
+    query = user_query.lower()
+    has_profile_context = (
+        user_id is not None
+        or re.search(r'\bu\d{3,}\b', query, re.I) is not None
+    )
+    if not has_profile_context:
+        return []
+
+    required = []
+    find_patterns = (
+        r'\btìm\b.*\b(người|ứng viên|hồ sơ)\b',
+        r'\b(đề xuất|gợi ý)\b.*\b(người|ứng viên|hồ sơ)\b',
+        r'\bghép đôi\b',
+        r'\b(ai|người nào|hồ sơ nào)\b.*\b(phù hợp|hợp)\b',
+        r'\b(phù hợp nhất|top\s*3|xếp hạng)\b',
+    )
+    if any(re.search(pattern, query, re.I) for pattern in find_patterns):
+        required.append('find_candidate_matches')
+    compatibility_patterns = (
+        r'\bphân tích\b.*\b(tương thích|phù hợp)\b',
+        r'\b(tính|xem)\b.*\bđiểm tương thích\b',
+        r'\bđộ tương thích\b.*\b(u\d{3,}|ứng viên|hồ sơ)\b',
+    )
+    if any(
+        re.search(pattern, query, re.I)
+        for pattern in compatibility_patterns
+    ):
+        required.append('calculate_compatibility')
+    if re.search(r'\b(lời mở đầu|tin nhắn đầu tiên|câu chào đầu tiên)\b', query):
+        required.append('suggest_first_message')
+    if not required and any(
+        phrase in query
+        for phrase in ('xem hồ sơ', 'lấy hồ sơ', 'thông tin hồ sơ')
+    ):
+        required.append('get_user_profile')
+    return required
+
+
+def _completed_actions(trace: list[dict[str, Any]]) -> set[str]:
+    '''Lấy các action đã thực thi hoặc đã trả lỗi nghiệp vụ hợp lệ.'''
+    integration_errors = {
+        'UNKNOWN_TOOL',
+        'INVALID_TOOL_ARGUMENTS',
+        'TOOL_EXECUTION_ERROR',
+        'TOOL_TIMEOUT',
+        'USER_ID_MISMATCH',
+    }
+    completed = set()
+    for item in trace:
+        observation = item.get('observation', {})
+        error_code = observation.get('error', {}).get('code')
+        if error_code not in integration_errors:
+            completed.add(item.get('action'))
+    return completed
+
+
+def _last_tool_error(result: dict[str, Any]) -> dict[str, Any] | None:
+    '''Trả lỗi tool gần nhất nếu luồng không tạo được dữ liệu có cấu trúc.'''
+    for item in reversed(result['trace']):
+        observation = item.get('observation', {})
+        if not observation.get('ok'):
+            return observation.get('error')
+    return None
+
+
+def _grounded_final_answer(
+    result: dict[str, Any],
+    fallback: str,
+) -> str:
+    '''Dựng câu trả lời từ Observation thay vì tin ID/điểm do LLM tự viết.'''
+    matches = result.get('matches') or []
+    compatibility = result.get('compatibility')
+    opener = result.get('opener')
+
+    if opener:
+        candidate = matches[0] if matches else {}
+        candidate_id = candidate.get('candidate_id', 'ứng viên đã chọn')
+        name = candidate.get('name')
+        label = f'{candidate_id} ({name})' if name else candidate_id
+        parts = [f'{label} là ứng viên được phân tích từ dữ liệu tool.']
+        if compatibility:
+            parts.append(
+                'Điểm tương thích minh họa: '
+                f"{compatibility.get('total_score', 0):.1f}."
+            )
+            shared_interests = compatibility.get('shared_interests') or []
+            shared_values = compatibility.get('shared_values') or []
+            if shared_interests:
+                parts.append(
+                    'Sở thích chung: ' + ', '.join(shared_interests) + '.'
+                )
+            if shared_values:
+                parts.append(
+                    'Giá trị chung: ' + ', '.join(shared_values) + '.'
+                )
+        parts.append('Lời mở đầu gợi ý: ' + opener['message'])
+        return ' '.join(parts)
+
+    if compatibility:
+        compatibility_actions = [
+            item
+            for item in result['trace']
+            if item.get('action') == 'calculate_compatibility'
+        ]
+        candidate_id = 'ứng viên đã chọn'
+        if compatibility_actions:
+            candidate_id = compatibility_actions[-1]['action_input'].get(
+                'candidate_id',
+                candidate_id,
+            )
+        return (
+            f'{candidate_id} có điểm tương thích minh họa '
+            f"{compatibility.get('total_score', 0):.1f}. "
+            'Kết quả được tính từ dữ liệu tool và không phải kết luận khoa học.'
+        )
+
+    if matches:
+        formatted = []
+        for match in matches:
+            label = match['candidate_id']
+            if match.get('name'):
+                label += f" ({match['name']})"
+            formatted.append(f"{label}: {match['score']:.1f} điểm")
+        return (
+            'Các ứng viên phù hợp nhất theo dữ liệu tool là '
+            + '; '.join(formatted)
+            + '. Điểm số chỉ mang tính minh họa.'
+        )
+
+    if result.get('profile'):
+        profile = result['profile']
+        return (
+            f"Hồ sơ {profile.get('id', '')}: "
+            f"{profile.get('name', 'không có tên')}, "
+            f"{profile.get('age', 'không rõ')} tuổi, "
+            f"khu vực {profile.get('location', 'không rõ')}."
+        )
+
+    error = _last_tool_error(result)
+    if error:
+        return error.get('message', 'Không thể hoàn thành yêu cầu từ dữ liệu tool.')
+    return fallback
+
+
 def run_react_agent(
     user_query: str,
     provider,
@@ -194,7 +387,7 @@ def run_react_agent(
 
     while True:
         response = provider.generate(
-            _build_react_prompt(user_query, result['trace']),
+            _build_react_prompt(user_query, result['trace'], user_id),
             system_prompt=REACT_SYSTEM_PROMPT,
         )
         if _provider_error(response):
@@ -214,8 +407,30 @@ def run_react_agent(
             return result
 
         if parsed['type'] == 'final':
+            completed = _completed_actions(result['trace'])
+            missing = [
+                action
+                for action in _required_actions(user_query, user_id)
+                if action not in completed
+            ]
+            if missing:
+                result['status'] = 'error'
+                result['error'] = {
+                    'code': 'MISSING_REQUIRED_TOOL',
+                    'message': (
+                        'Agent trả lời khi chưa gọi tool bắt buộc: '
+                        + ', '.join(missing)
+                    ),
+                }
+                result['answer'] = result['error']['message']
+                return result
             result['status'] = 'success'
-            result['answer'] = parsed['answer']
+            required = _required_actions(user_query, user_id)
+            result['answer'] = (
+                _grounded_final_answer(result, parsed['answer'])
+                if required
+                else parsed['answer']
+            )
             return result
 
         if len(result['trace']) >= MAX_ITERATIONS:
@@ -228,9 +443,19 @@ def run_react_agent(
             return result
 
         action_input = dict(parsed['action_input'])
-        if user_id and 'user_id' not in action_input:
-            action_input['user_id'] = user_id
-        observation = execute_tool(parsed['action'], action_input)
+        if (
+            user_id
+            and 'user_id' in action_input
+            and action_input['user_id'] != user_id
+        ):
+            observation = _error(
+                'USER_ID_MISMATCH',
+                'user_id trong action không khớp hồ sơ người dùng đã chọn',
+            )
+        else:
+            if user_id:
+                action_input['user_id'] = user_id
+            observation = execute_tool(parsed['action'], action_input)
         trace_item = {
             'iteration': len(result['trace']) + 1,
             'action': parsed['action'],
@@ -293,7 +518,15 @@ if __name__ == '__main__':
         f'🔌 Provider: {provider.__class__.__name__} | Model: {model_name}'
     )
 
+    exit_code = 0
     if args.mode in ('baseline', 'all'):
-        print_baseline_result(test, run_baseline_chatbot(test['question'], provider))
+        baseline_answer = run_baseline_chatbot(test['question'], provider)
+        print_baseline_result(test, baseline_answer)
+        if _provider_error(baseline_answer):
+            exit_code = 1
     if args.mode in ('react', 'all'):
-        print_react_result(test, run_react_agent(test['question'], provider))
+        react_result = run_react_agent(test['question'], provider)
+        print_react_result(test, react_result)
+        if react_result['status'] == 'error':
+            exit_code = 1
+    raise SystemExit(exit_code)
