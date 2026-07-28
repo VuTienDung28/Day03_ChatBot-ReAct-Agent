@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#fbfbf9">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='32' fill='%23e60023'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-size='32' font-family='Arial' font-weight='700' fill='white'%3EC%3C/text%3E%3C/svg%3E">
+    <title>Cupid | Baseline và ReAct Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <h1 class="visually-hidden">Cupid | So sánh Chatbot Baseline và ReAct Agent</h1>
+
+    <div id="compare-screen" class="app-shell">
+      <aside class="context-rail" aria-label="Ngữ cảnh demo">
+        <div class="rail-header">
+          <a class="brand" href="/" aria-label="Cupid | Trang so sánh">
+            <span class="brand-mark" aria-hidden="true">C</span>
+            <span>Cupid Lab</span>
+          </a>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Chuyển sang giao diện tối" title="Chuyển sang giao diện tối">
+            <svg class="theme-icon theme-icon--sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41"></path></svg>
+            <svg class="theme-icon theme-icon--moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.4A8.5 8.5 0 0 1 9.6 3.5 8.5 8.5 0 1 0 20.5 14.4Z"></path></svg>
+          </button>
+        </div>
+
+        <section class="profile-control" aria-labelledby="profile-label">
+          <p class="rail-kicker">Hồ sơ đang dùng</p>
+          <label id="profile-label" for="profile-select">Chọn người dùng mock</label>
+          <select id="profile-select"><!-- PROFILE_OPTIONS --></select>
+          <div class="profile-summary-row">
+            <span id="profile-avatar" class="profile-avatar" aria-hidden="true"></span>
+            <p id="profile-summary" class="profile-summary"></p>
+          </div>
+        </section>
+
+        <section class="prompt-library" aria-labelledby="prompt-title">
+          <h2 id="prompt-title">Thử một tình huống</h2>
+          <button class="quick-prompt" type="button" data-prompt="Tôi là người dùng U001. Hãy tìm 3 hồ sơ phù hợp nhất với tôi.">Tìm top 3</button>
+          <button class="quick-prompt" type="button" data-prompt="Tôi là người dùng U001. Hãy tìm người phù hợp nhất, phân tích độ tương thích và gợi ý lời mở đầu.">Chạy đủ 3 tool</button>
+          <button class="quick-prompt" type="button" data-prompt="Vì sao không nên chia sẻ địa chỉ nhà với người lạ?">Câu hỏi an toàn</button>
+        </section>
+
+        <p class="disclaimer">Dữ liệu mô phỏng. Điểm tương thích chỉ nhằm minh họa, không bảo đảm một mối quan hệ thành công.</p>
+      </aside>
+
+      <main id="comparison-workspace" class="comparison-workspace" data-view="compare" aria-busy="false">
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">Chatbot vs Agent</p>
+            <h2>Một câu hỏi. Hai cách trả lời.</h2>
+          </div>
+          <span class="mock-badge">12 hồ sơ mock</span>
+        </header>
+
+        <form id="compare-form" class="composer">
+          <label for="message-input">Bạn muốn Cupid hỗ trợ điều gì?</label>
+          <textarea id="message-input" rows="3" maxlength="1000" placeholder="Ví dụ: Hãy tìm người phù hợp nhất và gợi ý lời mở đầu."></textarea>
+          <div class="composer-footer">
+            <span id="character-count">0/1000</span>
+            <button id="send-button" class="primary-button" type="submit">So sánh hai chế độ</button>
+          </div>
+        </form>
+        <p id="request-error" class="request-error" role="alert"></p>
+        <p id="comparison-status" class="comparison-status" aria-live="polite"></p>
+
+        <div id="view-switch" class="view-switch" role="group" aria-label="Cách xem kết quả">
+          <button type="button" data-view="compare" aria-pressed="true">So sánh</button>
+          <button type="button" data-view="baseline" aria-pressed="false">Baseline</button>
+          <button type="button" data-view="react" aria-pressed="false">ReAct Agent</button>
+        </div>
+
+        <section class="comparison-grid" aria-label="Kết quả so sánh">
+          <article id="baseline-panel" class="answer-panel answer-panel--baseline">
+            <div class="panel-heading">
+              <div><span class="mode-dot"></span><h3>Chatbot Baseline</h3></div>
+              <span class="mode-badge">0 tool calls</span>
+            </div>
+            <div id="baseline-answer" class="answer-copy markdown-body"><p>Gửi một câu hỏi để xem baseline trả lời chỉ từ context.</p></div>
+          </article>
+
+          <article id="react-panel" class="answer-panel answer-panel--react">
+            <div class="panel-heading">
+              <div><span class="mode-dot"></span><h3>ReAct Agent</h3></div>
+              <span id="react-tool-badge" class="mode-badge">0 tool calls</span>
+            </div>
+            <div id="react-answer" class="answer-copy markdown-body"><p>Agent sẽ gọi tool khi cần dữ liệu hồ sơ hoặc tính điểm.</p></div>
+          </article>
+        </section>
+
+        <button id="discover-button" class="discover-cta" type="button" hidden>
+          Khám phá 3 ứng viên <span aria-hidden="true">→</span>
+        </button>
+      </main>
+
+      <aside id="debug-panel" class="debug-panel" aria-labelledby="debug-title">
+        <details id="compare-debug" class="compare-debug">
+          <summary>
+            <span><strong id="debug-title">Chi tiết hoạt động Agent</strong><small>Action, Input và Observation đã xác minh</small></span>
+            <span class="debug-summary"><span><strong id="tool-count">0</strong> tool call</span><span id="provider-mode" class="provider-mode">mock</span></span>
+          </summary>
+          <p class="debug-note">Không hiển thị chain-of-thought.</p>
+          <div id="trace-list" class="trace-list"><p class="trace-empty">Chưa có tool call.</p></div>
+        </details>
+      </aside>
+    </div>
+
+    <section id="discover-screen" class="discover-screen" hidden aria-labelledby="discover-title">
+      <header class="discover-header">
+        <button id="back-to-compare" class="back-button" type="button">← Quay lại so sánh</button>
+        <div>
+          <p class="eyebrow">Khám phá kết quả Agent</p>
+          <h2 id="discover-title" tabindex="-1">Có 3 hồ sơ để bạn xem xét.</h2>
+        </div>
+        <span id="discover-progress">0/0</span>
+      </header>
+
+      <div class="discover-layout">
+        <main class="discover-stage">
+          <p class="section-label">Hồ sơ đang xem</p>
+          <p id="discover-card-help" class="visually-hidden">Dùng phím mũi tên trái để bỏ qua hoặc mũi tên phải để chọn hồ sơ.</p>
+          <div id="match-deck" class="discover-deck">
+            <div id="discover-card" class="discover-card" tabindex="0" role="group" aria-describedby="discover-card-help" aria-label="Hồ sơ đang xem"></div>
+          </div>
+          <div class="discover-actions" aria-label="Hành động với hồ sơ">
+            <button id="pass-card" class="discover-action discover-action--pass" type="button" aria-label="Bỏ qua hồ sơ">×</button>
+            <p><kbd>←</kbd> bỏ qua <kbd>→</kbd> chọn</p>
+            <button id="select-card" class="discover-action discover-action--select" type="button" aria-label="Chọn hồ sơ">♥</button>
+          </div>
+        </main>
+
+        <aside class="discover-insight" aria-live="polite">
+          <p class="section-label">Ứng viên đã chọn</p>
+          <div id="selected-candidate-context" class="selected-candidate-context" hidden>
+            <span id="selected-candidate-avatar" class="selected-candidate-avatar" aria-hidden="true"></span>
+            <div><strong id="selected-candidate-name"></strong><span id="selected-candidate-id"></span></div>
+          </div>
+          <div id="discover-insight-content"><p>Chọn một hồ sơ để xem phân tích.</p></div>
+          <div id="compatibility-result" hidden></div>
+          <div id="opener-result" hidden>
+            <div class="opener-title-row">
+              <h3>Lời mở đầu gợi ý</h3>
+              <button id="copy-opener" type="button">Sao chép</button>
+            </div>
+            <textarea id="opener-text" rows="3" readonly></textarea>
+            <p id="copy-status" aria-live="polite"></p>
+          </div>
+          <button id="start-chat" class="start-chat-button" type="button" hidden>
+            Bắt đầu mock chat <span aria-hidden="true">→</span>
+          </button>
+        </aside>
+      </div>
+
+      <details id="discover-debug" class="discover-debug">
+        <summary>Chi tiết Agent | <span id="discover-tool-count">0</span> tool calls</summary>
+        <div id="discover-trace-list" class="trace-list"></div>
+      </details>
+      <button id="replay-deck" class="secondary-button" type="button" hidden>Xem lại 3 ứng viên</button>
+      <p id="discover-live-status" class="visually-hidden" aria-live="polite"></p>
+    </section>
+
+    <section id="chat-screen" class="chat-screen" hidden aria-labelledby="chat-candidate-name">
+      <header class="chat-header">
+        <button id="back-to-discover" class="back-button" type="button">← Quay lại khám phá</button>
+        <div class="chat-person">
+          <span id="chat-avatar" class="chat-avatar" aria-hidden="true"></span>
+          <div><strong id="chat-candidate-name"></strong><span id="chat-candidate-id"></span></div>
+        </div>
+        <span class="mock-chat-badge">Mock conversation</span>
+      </header>
+      <p class="local-chat-banner">Demo local. Tin nhắn không được gửi.</p>
+      <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions"></div>
+      <div id="typing-indicator" class="typing-indicator" hidden aria-live="polite"></div>
+      <form id="chat-form" class="chat-composer">
+        <span id="agent-suggestion" class="agent-suggestion" hidden>Gợi ý từ Agent</span>
+        <label class="visually-hidden" for="chat-input">Tin nhắn mock</label>
+        <textarea id="chat-input" maxlength="500" rows="2" placeholder="Nhập tin nhắn…"></textarea>
+        <p id="chat-error" class="chat-error" role="alert"></p>
+        <div class="chat-composer-footer">
+          <span id="chat-count">0/500</span>
+          <button id="chat-send" class="primary-button" type="submit">Gửi</button>
+        </div>
+      </form>
+      <p id="chat-live-status" class="visually-hidden" aria-live="polite"></p>
+    </section>
+
+    <p id="live-status" class="visually-hidden" aria-live="polite"></p>
+    <script id="profile-data" type="application/json">__PROFILE_BOOTSTRAP__</script>
+    <script src="app.js" defer></script>
+  </body>
+</html>

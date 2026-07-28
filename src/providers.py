@@ -123,11 +123,25 @@ class OpenRouterProvider(BaseLLMProvider):
                 "messages": messages
             }
             res = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload, timeout=30)
-            if res.status_code == 200:
-                data = res.json()
-                return data["choices"][0]["message"]["content"]
-            else:
+            if res.status_code != 200:
                 return f"[OpenRouter API Error {res.status_code}]: {res.text}"
+            try:
+                data = res.json()
+            except ValueError:
+                return "[OpenRouter API Error]: Phản hồi không có nội dung completion hợp lệ"
+            if isinstance(data, dict) and data.get("error"):
+                error = data["error"]
+                message = error.get("message") if isinstance(error, dict) else str(error)
+                return f"[OpenRouter API Error]: {message or 'OpenRouter từ chối yêu cầu'}"
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if not isinstance(choices, list) or not choices:
+                return "[OpenRouter API Error]: Phản hồi không có nội dung completion hợp lệ"
+            choice = choices[0]
+            message = choice.get("message") if isinstance(choice, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str) or not content.strip():
+                return "[OpenRouter API Error]: Phản hồi không có nội dung completion hợp lệ"
+            return content
         except Exception as e:
             return f"[OpenRouter Exception]: {str(e)}"
 
@@ -197,9 +211,7 @@ class MockProvider(BaseLLMProvider):
                 "trong dữ liệu mô phỏng. Bạn vui lòng kiểm tra lại mã hồ sơ."
             )
 
-        wants_analysis = (
-            "phân tích độ tương thích" in text or "phân tích tương thích" in text
-        )
+        wants_analysis = "phân tích" in text
         wants_opener = "lời mở đầu" in text
         has_matches = '"matches"' in text and '"candidate_id"' in text
         has_compatibility = '"total_score"' in text and '"breakdown"' in text
