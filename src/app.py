@@ -368,6 +368,22 @@ def _grounded_final_answer(
     return fallback
 
 
+def _safety_refusal(user_query: str) -> str | None:
+    text = user_query.lower()
+    ages = [int(age) for age in re.findall(r'\b(\d{1,2})\s*tuổi\b', text)]
+    if any(age < 18 for age in ages):
+        return 'Cupid chỉ hỗ trợ ghép đôi người từ 18 tuổi trở lên.'
+    if any(term in text for term in ('địa chỉ nhà', 'tọa độ chính xác', 'số điện thoại', 'email')):
+        return 'Mình không thể cung cấp thông tin riêng tư hoặc vị trí chính xác của hồ sơ.'
+    if any(term in text for term in ('quên mọi hướng dẫn', 'bỏ qua quy tắc')) and any(
+        term in text for term in ('toàn bộ hồ sơ', 'deal-breaker', 'tiết lộ')
+    ):
+        return 'Mình không thể bỏ qua guardrail hoặc tiết lộ dữ liệu hồ sơ riêng tư.'
+    if any(term in text for term in ('tình dục', 'gây áp lực', 'ép buộc', 'phải đồng ý')):
+        return 'Mình chỉ hỗ trợ lời mở đầu tôn trọng, an toàn và có sự đồng thuận.'
+    return None
+
+
 def run_react_agent(
     user_query: str,
     provider,
@@ -384,6 +400,11 @@ def run_react_agent(
         'trace': [],
         'error': None,
     }
+    refusal = _safety_refusal(user_query)
+    if refusal:
+        result['status'] = 'success'
+        result['answer'] = refusal
+        return result
 
     while True:
         response = provider.generate(
@@ -464,6 +485,37 @@ def run_react_agent(
         }
         result['trace'].append(trace_item)
         _collect_structured_output(result, parsed['action'], observation)
+
+
+def run_comparison(user_query: str, provider, user_id: str) -> dict[str, Any]:
+    refusal = _safety_refusal(user_query)
+    provider_mode = (
+        'mock' if provider.__class__.__name__ == 'MockProvider' else 'live'
+    )
+    if refusal:
+        react = {
+            'status': 'success',
+            'answer': refusal,
+            'profile': None,
+            'matches': [],
+            'compatibility': None,
+            'opener': None,
+            'trace': [],
+            'error': None,
+        }
+        return {
+            'baseline': {'answer': refusal, 'trace': []},
+            'react': react,
+            'provider_mode': provider_mode,
+        }
+    return {
+        'baseline': {
+            'answer': run_baseline_chatbot(user_query, provider),
+            'trace': [],
+        },
+        'react': run_react_agent(user_query, provider, user_id),
+        'provider_mode': provider_mode,
+    }
 
 
 def print_baseline_result(test: dict[str, Any], answer: str) -> None:
